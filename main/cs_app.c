@@ -241,22 +241,27 @@ esp_err_t cs_app_start(void)
     s_snapshot.period = s_period;
 
     bsp_i2c_init();
+    vTaskDelay(pdMS_TO_TICKS(1));
     bsp_i2c_scan();
+    vTaskDelay(pdMS_TO_TICKS(1));
 
     if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) {
         ESP_LOGE(TAG, "显示/LVGL 初始化失败,应用无法继续");
         return ESP_FAIL;
     }
     bsp_display_backlight(100);
+    vTaskDelay(pdMS_TO_TICKS(1));
 
     if (bsp_battery_init() != ESP_OK) {
         ESP_LOGW(TAG, "电量计不可用,右上角电量将显示 --");
     }
+    vTaskDelay(pdMS_TO_TICKS(1));
 
     esp_err_t err = cs_net_init();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "网络初始化失败: %s,仍可显示缓存", esp_err_to_name(err));
     }
+    vTaskDelay(pdMS_TO_TICKS(1));
 
     if (cs_store_load(&s_snapshot) == ESP_OK) {
         s_snapshot.index_from_cache = s_snapshot.index_valid;
@@ -273,6 +278,7 @@ esp_err_t cs_app_start(void)
     s_view.snapshot = s_snapshot;
     s_view.net = net;
     s_view.battery_soc = soc;
+    vTaskDelay(pdMS_TO_TICKS(1));
 
     if (!bsp_lvgl_lock(1000)) return ESP_ERR_TIMEOUT;
     cs_ui_create();

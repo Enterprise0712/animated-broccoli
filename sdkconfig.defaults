@@ -36,6 +36,9 @@ CONFIG_LV_MEM_SIZE_KILOBYTES=32
 
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000
+# 中断看门狗超时:默认 300ms 在本机启动序列(I2C 扫描+显示+LVGL+WiFi)下会触发
+# TG0WDT_SYS_RST 复位循环,放宽到 500ms 并配合初始化步骤间的主动让出 CPU。
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=500
 
 # --- Bluetooth LE / NimBLE ---
 # ESP32-C3 仅支持 BLE；示例只启用单连接 peripheral 所需的最小 host 配置。

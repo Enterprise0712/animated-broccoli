@@ -3,6 +3,8 @@
 #include "bsp_pins.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "bsp_i2c";
 
@@ -50,6 +52,8 @@ esp_err_t bsp_i2c_scan(void) {
     ESP_LOGI(TAG, "I2C 扫描开始:");
     int found = 0;
     for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+        // 每个地址探测之间让出 CPU,避免连续 112 次探测饿死 idle 任务触发看门狗。
+        vTaskDelay(pdMS_TO_TICKS(1));
         if (i2c_master_probe(s_bus, addr, 50) == ESP_OK) {
             const char *who = (addr == BSP_I2C_ES8311_ADDR) ? "  <- ES8311 音频 codec"
                             : (addr == BSP_I2C_CW2017_ADDR) ? "  <- CW2017 电量计"
