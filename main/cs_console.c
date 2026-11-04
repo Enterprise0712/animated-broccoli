@@ -142,6 +142,8 @@ static int cmd_reset(int argc, char **argv)
     (void)argc;
     (void)argv;
     esp_err_t net_err = cs_net_clear_config();
+    // 先清内存快照并作废在飞的刷新,再擦 NVS;否则刷新完成时会把旧行情写回缓存。
+    cs_app_clear_state();
     esp_err_t store_err = cs_store_clear();
     printf("已清除 Wi-Fi、API Key 与本地缓存(%s / %s)\n",
            esp_err_to_name(net_err), esp_err_to_name(store_err));

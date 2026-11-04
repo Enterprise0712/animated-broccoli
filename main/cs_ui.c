@@ -212,7 +212,9 @@ static void build_watch_page(lv_obj_t *page)
         lv_label_set_text(s_watch_price[i], "--");
 
         s_watch_delta[i] = label_create(card, 112, 26, CS_COLOR_MUTED);
-        lv_obj_set_width(s_watch_delta[i], 100);
+        lv_obj_set_width(s_watch_delta[i], 104);
+        // 卡片内只有一行高度,禁止折行,超长时用省略号而不是溢出到卡片外。
+        lv_label_set_long_mode(s_watch_delta[i], LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_align(s_watch_delta[i], LV_TEXT_ALIGN_RIGHT, 0);
         lv_label_set_text(s_watch_delta[i], "");
     }
@@ -411,14 +413,15 @@ static void set_watch_text(const cs_market_snapshot_t *snapshot)
         } else {
             char delta_text[24];
             cs_market_format_price(delta, delta_text, sizeof(delta_text));
+            // 去掉了"较上次"前缀:104px 宽度放不下,涨跌方向由符号与颜色表达。
             if (delta > 0) {
-                snprintf(text, sizeof(text), "较上次 +%s", delta_text);
+                snprintf(text, sizeof(text), "+%s", delta_text);
                 color = CS_COLOR_UP;
             } else if (delta < 0) {
-                snprintf(text, sizeof(text), "较上次 %s", delta_text);
+                snprintf(text, sizeof(text), "%s", delta_text);
                 color = CS_COLOR_DOWN;
             } else {
-                snprintf(text, sizeof(text), "较上次 持平");
+                snprintf(text, sizeof(text), "持平");
             }
             lv_label_set_text(s_watch_delta[i], text);
         }

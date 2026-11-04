@@ -25,6 +25,9 @@ static const char *TAG = "cs_net";
 
 #define CS_BASE_URL "https://open.steamdt.com"
 #define CS_HTTP_MAX_RESPONSE (48 * 1024)
+// 响应缓冲的起始容量。接口实测只返回几百到几千字节,按需增长可把
+// 单次请求的堆占用从固定 48KB 降到 4KB 起步,避免接近 C3 的堆上限。
+#define CS_HTTP_INITIAL_RESPONSE (4 * 1024)
 #define CS_CONFIG_NAMESPACE "cs_config"
 #define CS_KEY_SSID "wifi_ssid"
 #define CS_KEY_PASS "wifi_pass"
@@ -393,7 +396,13 @@ static esp_err_t http_request(esp_http_client_method_t method, const char *path,
         return ESP_ERR_INVALID_SIZE;
     }
 
-    char *buffer = malloc(CS_HTTP_MAX_RESPONSE + 1);
+    // 按实际长度分配;content_length 未知(chunked 常返回 0)时从小块开始按需增长,
+    // 避免为几百字节的响应预留 48KB,把峰值堆占用压到 TLS 缓冲区之外。
+    size_t capacity = CS_HTTP_INITIAL_RESPONSE;
+    if (content_length > 0 && (size_t)content_length + 1 > capacity) {
+        capacity = (size_t)content_length + 1;
+    }
+    char *buffer = malloc(capacity);
     if (!buffer) {
         set_error(error, error_size, "内存不足");
         esp_http_client_close(client);
@@ -402,8 +411,23 @@ static esp_err_t http_request(esp_http_client_method_t method, const char *path,
     }
     size_t used = 0;
     while (used < CS_HTTP_MAX_RESPONSE) {
+        if (used + 1 >= capacity) {
+            size_t grown = capacity * 2;
+            if (grown > CS_HTTP_MAX_RESPONSE + 1) grown = CS_HTTP_MAX_RESPONSE + 1;
+            if (grown <= capacity) break;
+            char *next = realloc(buffer, grown);
+            if (!next) {
+                free(buffer);
+                set_error(error, error_size, "内存不足");
+                esp_http_client_close(client);
+                esp_http_client_cleanup(client);
+                return ESP_ERR_NO_MEM;
+            }
+            buffer = next;
+            capacity = grown;
+        }
         int read = esp_http_client_read(client, buffer + used,
-                                        CS_HTTP_MAX_RESPONSE - (int)used);
+                                        (int)(capacity - used - 1));
         if (read <= 0) break;
         used += (size_t)read;
     }
@@ -726,7 +750,11 @@ esp_err_t cs_net_fetch(cs_market_snapshot_t *snapshot, int period)
     part[0] = 0;
     esp_err_t prices_err = fetch_prices(snapshot, part, sizeof(part));
     if (prices_err == ESP_OK) {
-        // 价格成功
+        // fetch_prices 在本地限流、或部分饰品无报价时仍返回 ESP_OK,但会写入 part。
+        // 这些提示必须传给界面,否则旧报价会被显示成刚更新的数据。
+        if (part[0]) {
+            append_error(combined, sizeof(combined), part);
+        }
     } else if (is_rate_limit_error(part)) {
         rate_limited = true;
         ESP_LOGW(TAG, "价格接口限流,使用缓存数据");
@@ -736,12 +764,16 @@ esp_err_t cs_net_fetch(cs_market_snapshot_t *snapshot, int period)
         append_error(combined, sizeof(combined), "自选价格更新失败");
     }
 
-    if (rate_limited && snapshot->index_valid) {
-        // 限流但有缓存:不显示错误,标注为缓存
+    if (combined[0]) {
+        // 有实质提示(含限流、部分缺失):展示出来,并标注数据可能来自缓存。
+        snprintf(snapshot->error, sizeof(snapshot->error), "%s", combined);
+        snapshot->index_from_cache = snapshot->index_valid;
+    } else if (rate_limited && snapshot->index_valid) {
+        // 纯限流且有缓存:不显示错误,标注为缓存
         snapshot->error[0] = 0;
         snapshot->index_from_cache = true;
     } else {
-        snprintf(snapshot->error, sizeof(snapshot->error), "%s", combined);
+        snapshot->error[0] = 0;
         snapshot->index_from_cache = false;
     }
     snapshot->refreshed_at = (int64_t)time(NULL);

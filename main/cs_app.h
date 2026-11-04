@@ -17,6 +17,9 @@ void cs_app_request_refresh(void);
 // 复制最近发布的快照(供串口 status 命令使用)。
 void cs_app_get_snapshot(cs_market_snapshot_t *out);
 
+// 清空内存中的行情快照,并作废正在进行的刷新(reset 命令使用)。
+void cs_app_clear_state(void);
+
 // 提交按键事件到应用输入队列。可从按键回调调用,不阻塞。
 void cs_app_submit_input(bsp_btn_t btn, bsp_btn_ev_t event);
 

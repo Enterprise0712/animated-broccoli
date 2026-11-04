@@ -23,7 +23,9 @@
 static const char *TAG = "cs_app";
 
 #define CS_INPUT_QUEUE_DEPTH 8
-#define CS_UI_TICK_MS 500
+// 快照由 view_timer 以 1Hz 更新,界面刷新与之对齐即可;更快的周期
+// 只会把相同文本反复写回 lv_label,白白消耗 LVGL 内存池的 malloc/free。
+#define CS_UI_TICK_MS 1000
 #define CS_VIEW_TICK_US (1LL * 1000 * 1000)
 #define CS_AUTO_REFRESH_US (30LL * 1000 * 1000)
 #define CS_AUTO_REFRESH_INTERVAL_S 300
@@ -48,6 +50,13 @@ static TaskHandle_t s_input_task;
 static TaskHandle_t s_net_task;
 static volatile int s_period = 2;
 static cs_page_t s_page = CS_PAGE_MARKET;
+// 每次清除状态就自增,让正在进行的刷新结果失效,避免它把旧数据写回缓存。
+static volatile uint32_t s_refresh_generation;
+// 记录上一次"首次自动拉取"的时刻,避免刷新持续失败时每 2 秒重试打爆接口。
+static int64_t s_last_auto_probe_us;
+// 开机后是否已完成第一次自动拉取。缓存里带着上次的 refreshed_at,
+// 不能用它判断"是否需要首拉",否则开机后仍要等 30 秒。
+static bool s_boot_refresh_done;
 
 static void snapshot_lock(void)
 {
@@ -72,11 +81,46 @@ void cs_app_get_snapshot(cs_market_snapshot_t *out)
     snapshot_unlock();
 }
 
+void cs_app_clear_state(void)
+{
+    // 让正在进行的刷新结果作废,并清空内存快照,与 NVS 缓存的清除保持一致。
+    s_refresh_generation++;
+    s_last_auto_probe_us = 0;
+    s_boot_refresh_done = false;
+    if (!s_snapshot_mutex) return;
+    snapshot_lock();
+    memset(&s_snapshot, 0, sizeof(s_snapshot));
+    s_snapshot.period = s_period;
+    s_view.snapshot = s_snapshot;
+    snapshot_unlock();
+    // 丢弃尚未被网络线程消费的刷新请求。
+    if (s_refresh_signal) xSemaphoreTake(s_refresh_signal, 0);
+}
+
 static void net_task(void *arg)
 {
     (void)arg;
     for (;;) {
-        if (xSemaphoreTake(s_refresh_signal, portMAX_DELAY) != pdTRUE) continue;
+        // 平时阻塞等待刷新请求;超时唤醒只用于"首次联网后自动拉一次",
+        // 否则开机后要等 30 秒的 auto_refresh_cb 才会出现第一份数据。
+        bool requested = (xSemaphoreTake(s_refresh_signal, pdMS_TO_TICKS(2000)) == pdTRUE);
+        if (!requested) {
+            cs_net_status_t net;
+            cs_net_status(&net);
+            if (!net.connected || !net.has_key) continue;
+            // 开机后已完成首拉:后续刷新交给 auto_refresh_cb 的 5 分钟节奏。
+            if (s_boot_refresh_done) continue;
+            // 刷新失败时这里会反复进来,限制最短重试间隔,避免打爆指数接口。
+            int64_t now_us = esp_timer_get_time();
+            if (s_last_auto_probe_us > 0 &&
+                now_us - s_last_auto_probe_us < 10LL * 1000 * 1000) {
+                continue;
+            }
+            s_last_auto_probe_us = now_us;
+            ESP_LOGI(TAG, "首次联网,自动拉取行情");
+        }
+
+        const uint32_t generation = s_refresh_generation;
 
         cs_market_snapshot_t work;
         const int period = s_period;
@@ -92,6 +136,11 @@ static void net_task(void *arg)
 
         esp_err_t err = cs_net_fetch(&work, period);
         work.refreshing = false;
+        if (generation != s_refresh_generation) {
+            // 刷新期间状态被清除(reset),丢弃本次结果,避免把旧数据写回缓存和界面。
+            ESP_LOGI(TAG, "刷新结果已过期,丢弃");
+            continue;
+        }
         if (err != ESP_OK) {
             if (work.error[0] == 0) {
                 snprintf(work.error, sizeof(work.error), "刷新失败: %s",
@@ -106,6 +155,7 @@ static void net_task(void *arg)
         snapshot_unlock();
 
         if (err == ESP_OK) {
+            s_boot_refresh_done = true;
             cs_store_save(&work);
             ESP_LOGI(TAG, "行情已刷新: 指数 %s", work.index_valid ? "OK" : "无");
         } else {
@@ -266,6 +316,8 @@ esp_err_t cs_app_start(void)
     if (cs_store_load(&s_snapshot) == ESP_OK) {
         s_snapshot.index_from_cache = s_snapshot.index_valid;
         s_snapshot.refreshing = false;
+        // 缓存里保存的是上一次会话的错误文本,开机时要清掉,避免显示过期提示。
+        s_snapshot.error[0] = 0;
         if (s_snapshot.period >= 1 && s_snapshot.period <= 3) {
             s_period = s_snapshot.period;
         }
